@@ -1,4 +1,5 @@
 import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
 import argparse
 import glob
 
@@ -12,6 +13,9 @@ from copy import deepcopy
 
 import config
 from datasets.dataset import get_dataset
+
+import open3d as o3d
+from tqdm import tqdm
 
 
 def load_virt_cam_poses(path):
@@ -45,7 +49,7 @@ def load_cam_intrinsics_from_cfg(cfg):
     return K, H, W
 
 
-def render_depth_maps(mesh, poses, K, H, W, near=0.01, far=5.0):
+def render_depth_maps_old(mesh, poses, K, H, W, near=0.01, far=5.0):
     """
     :param mesh: Mesh to be rendered
     :param poses: list of camera poses (c2w under OpenGL convention)
@@ -74,10 +78,158 @@ def render_depth_maps(mesh, poses, K, H, W, near=0.01, far=5.0):
     return depth_maps
 
 
+def render_depth_maps_bis(mesh, poses, K, H, W, near=0.01, far=5.0):
+    mesh = mesh.as_open3d
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=W, height=H)
+    vis.get_render_option().mesh_show_back_face = True
+
+    vis.add_geometry(mesh, reset_bounding_box=True,)
+
+    ctr = vis.get_view_control()
+    ctr.set_constant_z_far(far)
+
+    depth_maps = []
+    for pose in tqdm(poses):
+        param = o3d.camera.PinholeCameraParameters()
+        pose[:3, 1] *= -1
+        pose[:3, 2] *= -1
+        param.extrinsic = np.linalg.inv(pose)  # 4x4 numpy array
+        param.intrinsic = o3d.camera.PinholeCameraIntrinsic(W, H, K[0,0], K[1,1], K[0,2], K[1,2])
+
+        ctr.convert_from_pinhole_camera_parameters(param,True)
+
+        vis.poll_events()
+        vis.update_renderer()
+        depth = vis.capture_depth_float_buffer(False)
+        depth = np.asarray(depth)
+        depth_maps.append(depth)
+
+    return depth_maps
+
+
+
+
+def render_depth(inputs):
+    i = inputs["input"]
+    vertices = inputs["vertices"]
+    triangles = inputs["triangles"]
+    mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(vertices),
+        o3d.utility.Vector3iVector(triangles)
+    )
+    poses = inputs["poses"]
+    H = inputs["H"]
+    W = inputs["W"]
+    K = inputs["K"]
+    far = inputs["far"]
+    near = inputs["near"]
+    debug_dir = inputs["debug_dir"]
+
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(width=W, height=H)
+    vis.get_render_option().mesh_show_back_face = True
+    vis.add_geometry(mesh, reset_bounding_box=True,)
+    ctr = vis.get_view_control()
+    ctr.set_constant_z_far(far)
+    ctr.set_constant_z_near(near)
+
+    depth_maps = []
+    for pose in poses:
+        param = o3d.camera.PinholeCameraParameters()
+        pose[:3, 1] *= -1
+        pose[:3, 2] *= -1
+        param.extrinsic = np.linalg.inv(pose)  # 4x4 numpy array
+        param.intrinsic = o3d.camera.PinholeCameraIntrinsic(W, H, K[0,0], K[1,1], K[0,2], K[1,2])
+
+        ctr.convert_from_pinhole_camera_parameters(param,True)
+
+        vis.poll_events()
+        vis.update_renderer()
+        depth = vis.capture_depth_float_buffer(False)
+        depth = np.asarray(depth)
+        depth_maps.append(depth)
+        
+        if debug_dir is not None:
+            from imageio import imwrite
+            j = np.random.randint(10000)
+            output_filename=os.path.join(debug_dir,f"{i}_{j}.png")
+            depth = depth - depth.min()
+            depth = depth / depth.max()
+            depth *= 255.
+            depth = depth.astype(np.uint8)
+            imwrite(output_filename, depth)
+            #vis.capture_screen_image(output_filename, False)
+
+
+    return {"index":i, "depths": depth_maps}
+
+
+def render_depth_maps(mesh, poses, K, H, W, near=0.01, far=5.0, debug_dir=None):
+    from multiprocessing import Pool
+
+    mesh = mesh.as_open3d
+    vertices = np.array(mesh.vertices)
+    triangles = np.array(mesh.triangles)
+
+    BS = int(len(poses)/8) + 1
+    inputs = [{'input':i,
+               'vertices': vertices,
+               'triangles': triangles,
+               'H': H,
+               'W': W,
+               'K': K,
+               'far': far,
+               'near': near,
+               'poses': np.array(poses[i:i+BS]),
+               'debug_dir': debug_dir
+              } for i in range(0,len(poses),BS)]
+
+    pool = Pool(8)
+
+    results = list(
+        tqdm(
+            pool.imap_unordered(
+                render_depth, inputs),
+                total=len(inputs)
+        )
+    )
+
+    results = sorted(results, key=lambda d: d["index"])
+    
+    # -- cpt=0
+
+    depth_maps = []
+    for r in results:
+        for d in r["depths"]:
+            depth_maps.append(d)
+            
+            # -- DEBUG
+            # -- DEBUG
+            # -- a=d.copy()
+            # -- a=a-a.min()
+            # -- a=a/a.max()
+            # -- a=a*255.
+            # -- a=a.astype(np.uint8)
+            # -- from imageio import imwrite
+            # -- imwrite(f"debug_render_depths_neural_rgbd_br/{cpt}.png",a)
+            # -- cpt+=1
+
+
+    assert len(depth_maps) == len(poses)
+
+    return depth_maps
+
+
+
+
+
 def render_depth_maps_doublesided(mesh, poses, K, H, W, near=0.01, far=10.0):
     depth_maps_1 = render_depth_maps(mesh, poses, K, H, W, near=near, far=far)
+                                     #debug_dir="test_render_virt_cams_runs_batch_replica_36_office0_0_bis_1")
     mesh.faces[:, [1, 2]] = mesh.faces[:, [2, 1]]
     depth_maps_2 = render_depth_maps(mesh, poses, K, H, W, near=near, far=far)
+                                     #debug_dir="test_render_virt_cams_runs_batch_replica_36_office0_0_bis_2")
     mesh.faces[:, [1, 2]] = mesh.faces[:, [2, 1]]  # it's a pass by reference, so I restore the original order
 
     depth_maps = []
@@ -86,6 +238,11 @@ def render_depth_maps_doublesided(mesh, poses, K, H, W, near=0.01, far=10.0):
         depth_map = np.where((depth_maps_2[i] > 0) & (depth_maps_2[i] < depth_map), depth_maps_2[i], depth_map)
         depth_maps.append(depth_map)
 
+    return depth_maps
+
+
+def render_depth_maps_singlesided(mesh, poses, K, H, W, near=0.01, far=10.0):
+    depth_maps = render_depth_maps(mesh, poses, K, H, W, near=near, far=far)
     return depth_maps
 
 
@@ -177,7 +334,8 @@ def apply_culling_strategy(points, poses, K, H, W,
 
 def cull_one_mesh(cfg, c2w_list, mesh_path, save_path, save_unseen=False, remove_occlusion=True,
                   virtual_cameras=False, virt_cam_path=None, subdivide=False, max_edge=0.05,
-                  scene_bounds=None, th_obs=0, eps=0.03, silent=True, platform='egl'):
+                  scene_bounds=None, th_obs=0, eps=0.03, silent=True,
+                  platform='egl', gt_mesh_path=None):
     """
     :param cfg:
     :param c2w_list: list of camera poses (c2w under OpenGL)
@@ -198,6 +356,11 @@ def cull_one_mesh(cfg, c2w_list, mesh_path, save_path, save_unseen=False, remove
     vertices = mesh.vertices  # [V, 3]
     triangles = mesh.faces  # [F, 3]
     colors = mesh.visual.vertex_colors  # [V, 3]
+    
+    if gt_mesh_path is not None:
+        gt_mesh = trimesh.load(gt_mesh_path, force='mesh', process=False)
+    else:
+        gt_mesh = mesh
 
     # cull with the bounding box first
     if scene_bounds is not None:
@@ -205,7 +368,6 @@ def cull_one_mesh(cfg, c2w_list, mesh_path, save_path, save_unseen=False, remove
         inside_mask = inside_mask[triangles[:, 0]] | inside_mask[triangles[:, 1]] | inside_mask[triangles[:, 2]]
         triangles = triangles[inside_mask, :]
 
-    os.environ['PYOPENGL_PLATFORM'] = platform
     K, H, W = load_cam_intrinsics_from_cfg(cfg)
 
     # add virtual cameras to camera poses list
@@ -220,7 +382,8 @@ def cull_one_mesh(cfg, c2w_list, mesh_path, save_path, save_unseen=False, remove
     # we don't need to subdivided mesh to render depth, so do the rendering before updating the mesh
     if remove_occlusion:
         print("rendering depth maps...")
-        rendered_depth_maps = render_depth_maps_doublesided(mesh, c2w_list, K, H, W, near=0.01, far=10.0)
+        #rendered_depth_maps = render_depth_maps_doublesided(mesh, c2w_list, K, H, W, near=0.01, far=10.0)
+        rendered_depth_maps = render_depth_maps_singlesided(gt_mesh, c2w_list, K, H, W, near=0.01, far=10.0)
     else:
         rendered_depth_maps = None
 
@@ -278,6 +441,7 @@ if __name__ == "__main__":
     parser.add_argument("--virtual_cameras", dest="virtual_cameras", action="store_true")
     parser.add_argument("--virt_cam_path", type=str, help="path to virtual camera DIR (optional)")
     parser.add_argument("--gt_pose", dest="gt_pose", action="store_true")
+    parser.add_argument("--gt_mesh", type=str, help="path to the GT full(unculled) mesh")
     parser.add_argument("--ckpt_path", type=str, help="path to checkpoint file")
     parser.add_argument("--skip", type=int, default=2)
     parser.add_argument("--th_obs", type=int, default=0)
@@ -312,4 +476,5 @@ if __name__ == "__main__":
     cull_one_mesh(cfg, c2w_list, mesh_path, save_path, save_unseen=False,
                   remove_occlusion=args.remove_occlusion, scene_bounds=None,
                   eps=args.eps, th_obs=args.th_obs, silent=True, platform='egl',
-                  virtual_cameras=args.virtual_cameras, virt_cam_path=args.virt_cam_path)
+                  virtual_cameras=args.virtual_cameras,
+                  virt_cam_path=args.virt_cam_path, gt_mesh_path=args.gt_mesh)

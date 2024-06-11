@@ -1,5 +1,6 @@
 import argparse
 import os
+import json
 import random
 import time
 
@@ -355,20 +356,38 @@ if __name__ == "__main__":
     parser.add_argument("-3d", "--metric_3d",
                         action="store_true", help="enable 3D metric")
     args = parser.parse_args()
-
+    
+    experiment_dir = os.path.dirname(args.rec_mesh)
+    output_filename = os.path.join(experiment_dir, "rec_results.json")
+    result = {}
     if args.metric_3d:
-        calc_3d_metric(args.rec_mesh, args.gt_mesh)
+        res= calc_3d_metric(args.rec_mesh, args.gt_mesh)
+        result.update(res)
 
     if args.metric_2d:
         assert args.dataset_type in ["Replica", "RGBD"], "Unknown dataset type..."
         eval_data_dir = os.path.dirname(args.gt_mesh)
         unseen_pc_file = os.path.join(eval_data_dir, "gt_pc_unseen.npy")
         pose_file = os.path.join(eval_data_dir, "sampled_poses_1000.npz")
+
+        gt_depth_render_file = os.path.join(eval_data_dir, "gt_depths_1000.npz")
+            
+        pred_data_dir = os.path.dirname(args.rec_mesh)
+        depth_render_file = os.path.join(pred_data_dir, "depths_virt_cams_1000.npz")
+
         if args.dataset_type == "Replica":  # follow NICE-SLAM
             sx, sy, sz, dx, dy, dz = 0.3, 0.7, 0.7, 0.0, 0.0, 0.4
         elif os.path.basename(eval_data_dir) == "complete_kitchen":  # complete_kitchen has special shape
             sx, sy, sz, dx, dy, dz = 0.3, 0.5, 0.5, 1.2, 0.0, 1.8
         else:
             sx, sy, sz, dx, dy, dz = 0.3, 0.6, 0.6, 0.0, 0.0, 0.0
-        calc_2d_metric(args.rec_mesh, args.gt_mesh, unseen_pc_file, pose_file=pose_file, n_imgs=1000,
-                       not_counting_missing_depth=True, sx=sx, sy=sy, sz=sz, dx=dx, dy=dy, dz=dz)
+        res = calc_2d_metric(
+            args.rec_mesh, args.gt_mesh, unseen_pc_file, pose_file=pose_file, 
+            gt_depth_render_file=gt_depth_render_file,
+            depth_render_file=depth_render_file, 
+            n_imgs=1000,
+            not_counting_missing_depth=True, sx=sx, sy=sy, sz=sz, dx=dx, dy=dy, dz=dz
+        )
+        result.update(res)
+
+    json.dump(result, open(output_filename, "w"))
