@@ -197,24 +197,10 @@ def render_depth_maps(mesh, poses, K, H, W, near=0.01, far=5.0, debug_dir=None):
 
     results = sorted(results, key=lambda d: d["index"])
     
-    # -- cpt=0
-
     depth_maps = []
     for r in results:
         for d in r["depths"]:
             depth_maps.append(d)
-            
-            # -- DEBUG
-            # -- DEBUG
-            # -- a=d.copy()
-            # -- a=a-a.min()
-            # -- a=a/a.max()
-            # -- a=a*255.
-            # -- a=a.astype(np.uint8)
-            # -- from imageio import imwrite
-            # -- imwrite(f"debug_render_depths_neural_rgbd_br/{cpt}.png",a)
-            # -- cpt+=1
-
 
     assert len(depth_maps) == len(poses)
 
@@ -226,10 +212,8 @@ def render_depth_maps(mesh, poses, K, H, W, near=0.01, far=5.0, debug_dir=None):
 
 def render_depth_maps_doublesided(mesh, poses, K, H, W, near=0.01, far=10.0):
     depth_maps_1 = render_depth_maps(mesh, poses, K, H, W, near=near, far=far)
-                                     #debug_dir="test_render_virt_cams_runs_batch_replica_36_office0_0_bis_1")
     mesh.faces[:, [1, 2]] = mesh.faces[:, [2, 1]]
     depth_maps_2 = render_depth_maps(mesh, poses, K, H, W, near=near, far=far)
-                                     #debug_dir="test_render_virt_cams_runs_batch_replica_36_office0_0_bis_2")
     mesh.faces[:, [1, 2]] = mesh.faces[:, [2, 1]]  # it's a pass by reference, so I restore the original order
 
     depth_maps = []

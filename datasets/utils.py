@@ -48,9 +48,9 @@ def get_camera_rays(H, W, fx, fy=None, cx=None, cy=None, type='OpenGL'):
 
     if fy is None:
         fy = fx
-    if type is  'OpenGL':
+    if type ==  'OpenGL':
         dirs = torch.stack([(i - cx)/fx, -(j - cy)/fy, -torch.ones_like(i)], -1)
-    elif type is 'OpenCV':
+    elif type == 'OpenCV':
         dirs = torch.stack([(i - cx)/fx, (j - cy)/fy, torch.ones_like(i)], -1)
     else:
         raise NotImplementedError()
